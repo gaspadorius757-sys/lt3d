@@ -1,0 +1,2 @@
+{"name":"lt3d-server","type":"module","private":true,"engines":{"node":">=22.13"},
+ "scripts":{"start":"node server.js","dev":"DEV=1 node server.js"},"dependencies":{"ws":"^8.18.0"}}
