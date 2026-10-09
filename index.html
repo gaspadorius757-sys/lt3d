@@ -34,8 +34,9 @@ const cam = new THREE.PerspectiveCamera(60, 1, 0.5, 250000);
 scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 1.1));
 const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(300, 600, 200); scene.add(sun);
 const M = c => new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide });
-const mat = { ground: M(0x8fbf6a), road: new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
-  bld: M(0xd8cfc0), water: M(0x4a8fd0), forest: M(0x2f6b3a), park: M(0x74b05a), land: M(0x7fae5f) };
+const B = c => new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide, depthWrite: false });
+const mat = { ground: B(0x8fbf6a), road: new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, depthWrite: false }),
+  bld: M(0xd8cfc0), water: B(0x4a8fd0), forest: B(0x2f6b3a), park: B(0x74b05a), land: B(0x7fae5f) };
 const RC = [0xe8a33d, 0xf0c070, 0xf5d99a, 0xffffff, 0xeeeeee, 0xdddddd, 0xb8a888, 0xc9b99a, 0x555555, 0x3a7fc0].map(h => new THREE.Color(h));
 
 // ---------- geometry builders (all take flat [x,y,x,y..] in metres, north=+y -> -z) ----------
@@ -73,14 +74,15 @@ const add = (grp, g, m, ro = 0) => { if (g) { const o = new THREE.Mesh(g, m); o.
 // ---------- chunk manager ----------
 const chunks = new Map(), pending = new Set(), failed = new Map();
 const groundGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(.5, 0, -.5);
-async function loadTile(k) {
+async function loadTile(k) { try { await loadTile2(k); } catch (e) { lastErr = k + ': ' + e.message; console.error(e); failed.set(k, performance.now()); } }
+async function loadTile2(k) {
   const [tx, ty] = k.split('_').map(Number);
   let d; for (let a = 0; a < 2 && !d; a++) { try { const r = await fetch(`data/tiles/${k}.json.gz?v=${idx.v}`); if (!r.ok) throw 0; d = await r.json(); } catch { await new Promise(s => setTimeout(s, 500)); } }
-  if (!d) { failed.set(k, performance.now()); return; }
+  if (!d) { lastErr = k + ': fetch failed'; failed.set(k, performance.now()); return; }
   const g = new THREE.Group(), gx = tx * T - X0, gz = -(ty * T - Y0); g.position.set(gx, 0, gz);
-  const ground = new THREE.Mesh(groundGeo, mat.ground); ground.scale.set(T, 1, T); g.add(ground);
-  add(g, areaGeo(d.p, 0.01), mat.park); add(g, areaGeo(d.f, 0.02), mat.forest); add(g, areaGeo(d.w, 0.03), mat.water);
-  add(g, ribbonGeo(d.r.map(a => [a[0], a[1], a[2]]), 0.05), mat.road, 2); add(g, buildingGeo(d.b), mat.bld);
+  const ground = new THREE.Mesh(groundGeo, mat.ground); ground.scale.set(T, 1, T); ground.renderOrder = 0; g.add(ground);
+  add(g, areaGeo(d.p, 0.01), mat.park, 1); add(g, areaGeo(d.f, 0.02), mat.forest, 2); add(g, areaGeo(d.w, 0.03), mat.water, 3);
+  add(g, ribbonGeo(d.r.map(a => [a[0], a[1], a[2]]), 0.05), mat.road, 4); add(g, buildingGeo(d.b), mat.bld, 5);
   g.userData.bl = d.b.map(([h, r]) => { const ring = []; let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9;
     for (let i = 0; i < r.length; i += 2) { const x = gx + r[i], z = gz - r[i + 1]; ring.push([x, z]); x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
     return { bb: [x0 - .5, z0 - .5, x1 + .5, z1 + .5], ring }; });
@@ -100,13 +102,13 @@ function manage() {
 }
 
 // ---------- country overview (always present; the low-detail LOD) ----------
-const places = [];
+const places = [], OV = new THREE.Group(); let lastErr = '';
 async function loadOverview() {
   const o = await (await fetch(`data/overview.json.gz?v=${idx.v}`)).json(), rel = a => a.map((v, i) => i % 2 ? v - Y0 : v - X0);
-  const G = new THREE.Group();
-  add(G, areaGeo(o.country.map(rs => rs.map(rel)), -0.5), mat.land);
-  add(G, areaGeo(o.water.map(rs => rs.map(rel)), -0.4), mat.water);
-  add(G, ribbonGeo(o.roads.map(([c, p]) => [c, c < 1 ? 70 : 45, rel(p)]), -0.3), mat.road);
+  const G = OV;
+  add(G, areaGeo(o.country.map(rs => rs.map(rel)), -0.5), mat.land, -3);
+  add(G, areaGeo(o.water.map(rs => rs.map(rel)), -0.4), mat.water, -2);
+  add(G, ribbonGeo(o.roads.map(([c, p]) => [c, c < 1 ? 70 : 45, rel(p)]), -0.3), mat.road, -1);
   scene.add(G); for (const [n, t, x, y] of o.places) places.push([n, x, y]);
 }
 
@@ -173,13 +175,13 @@ addEventListener('resize', resize); resize();
 let last = performance.now(), acc = 0, fps = 0, hudT = 0, manT = 0;
 function frame(now) {
   requestAnimationFrame(frame); const dt = Math.min(.05, (now - last) / 1000); last = now; fps = fps * .9 + (1 / Math.max(dt, 1e-3)) * .1;
-  step(dt);
+  step(dt); OV.visible = dist > 600 || chunks.size === 0;
   const cp = Math.cos(pitch); cam.position.set(P.position.x + Math.sin(yaw) * cp * dist, P.position.y + 1.5 + Math.sin(pitch) * dist, P.position.z + Math.cos(yaw) * cp * dist); cam.lookAt(P.position.x, P.position.y + 1.5, P.position.z);
   scene.fog.near = Math.max(1500, dist * 1.5); scene.fog.far = scene.fog.near * 12; cam.far = scene.fog.far * 1.2; cam.updateProjectionMatrix();
   if ((manT += dt) > .25) { manT = 0; manage(); localStorage.lt3dPos = JSON.stringify([P.position.x + X0, Y0 - P.position.z]); }
   if ((hudT += dt) > .5) { hudT = 0; const X = P.position.x + X0, Y = Y0 - P.position.z; let nn = '', nd = 1e9;
     for (const [n, x, y] of places) { const d = Math.hypot(x - X, y - Y); if (d < nd) { nd = d; nn = n; } }
-    $('hud').textContent = `LKS94 ${X.toFixed(0)}, ${Y.toFixed(0)}  tile ${ptx}_${pty}\nnear ${nn} (${(nd / 1000).toFixed(1)} km)\nchunks ${chunks.size}${pending.size ? ' (+' + pending.size + ' loading)' : ''}  ${fps.toFixed(0)} fps${fly ? '  [DEV FLY]' : ''}`; }
+    $('hud').textContent = `LKS94 ${X.toFixed(0)}, ${Y.toFixed(0)}  tile ${ptx}_${pty}\nnear ${nn} (${(nd / 1000).toFixed(1)} km)\nchunks ${chunks.size}/${tileSet.size} tiles${lastErr ? '\nERR ' + lastErr : ''}${pending.size ? ' (+' + pending.size + ' loading)' : ''}  ${fps.toFixed(0)} fps${fly ? '  [DEV FLY]' : ''}`; }
   ren.render(scene, cam);
 }
 (async () => {
