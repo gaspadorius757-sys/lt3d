@@ -92,7 +92,7 @@ async function loadTile2(k) {
 function dispose(g) { g.traverse(o => { if (o.geometry && o.geometry !== groundGeo) o.geometry.dispose(); }); }
 let ptx = 0, pty = 0;
 function manage() {
-  ptx = Math.floor((P.x + X0) / T); pty = Math.floor((Y0 - P.z) / T);
+  ptx = Math.floor((P.position.x + X0) / T); pty = Math.floor((Y0 - P.position.z) / T);
   const want = [];
   for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) { const k = `${ptx + dx}_${pty + dy}`;
     if (tileSet.has(k) && !chunks.has(k) && !pending.has(k) && !(failed.get(k) > performance.now() - 10000)) want.push([dx * dx + dy * dy, k]); }
