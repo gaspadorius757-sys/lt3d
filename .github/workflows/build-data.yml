@@ -1,0 +1,21 @@
+name: Build Lithuania data
+on:
+  workflow_dispatch:
+  schedule: [{ cron: '0 3 1 * *' }]
+permissions: { contents: write }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -r pipeline/requirements.txt
+      - run: curl -fL -o lt.osm.pbf https://download.geofabrik.de/europe/lithuania-latest.osm.pbf
+      - run: python pipeline/build.py lt.osm.pbf data
+      - run: tar czf lt3d-data.tar.gz -C data .
+      - env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release view data-latest >/dev/null 2>&1 || gh release create data-latest --title "Lithuania data" --notes "OSM data © OpenStreetMap contributors (ODbL)"
+          gh release upload data-latest lt3d-data.tar.gz --clobber
