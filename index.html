@@ -1,0 +1,197 @@
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Lietuva 3D</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#9ec7e8;font:13px system-ui;touch-action:none;user-select:none}
+canvas{display:block;width:100%;height:100%}
+#hud{position:fixed;top:6px;left:8px;color:#fff;text-shadow:0 1px 3px #000;white-space:pre;pointer-events:none}
+#load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#123;color:#fff;text-align:center;padding:20px;white-space:pre-wrap}
+#attr{position:fixed;right:4px;bottom:2px;background:#fffc;padding:1px 5px;font-size:11px}#attr a{color:#036}
+#joy{position:fixed;left:16px;bottom:34px;width:120px;height:120px;border-radius:50%;background:#fff3;border:2px solid #fff8;display:none}
+#knob{position:absolute;left:40px;top:40px;width:40px;height:40px;border-radius:50%;background:#fffa}
+.b{position:fixed;width:54px;height:54px;border-radius:50%;background:#fff5;border:2px solid #fff9;color:#fff;font:700 20px system-ui;display:none;align-items:center;justify-content:center}
+body.t #joy{display:block}body.t .b{display:flex}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"}}</script>
+</head><body>
+<canvas id="c"></canvas><div id="hud"></div><div id="load">Loading…</div>
+<div id="joy"><div id="knob"></div></div>
+<div class="b" id="jump" style="right:20px;bottom:50px">⤒</div>
+<div class="b" id="zin" style="right:20px;bottom:240px">+</div><div class="b" id="zout" style="right:20px;bottom:176px">−</div>
+<div class="b" id="run" style="right:84px;bottom:50px;font-size:13px">RUN</div>
+<div id="attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors (ODbL)</div>
+<script type="module">
+import * as THREE from 'three';
+const $ = id => document.getElementById(id), touch = matchMedia('(pointer:coarse)').matches;
+if (touch) document.body.classList.add('t');
+const DEV = new URLSearchParams(location.search).has('dev'), R = touch ? 2 : 3;   // chunk radius (2 -> 25 chunks, 3 -> 49)
+const say = m => $('load').textContent = m, fail = m => { $('load').style.display = 'flex'; say(m); };
+let idx, X0, Y0, T, tileSet;
+const ren = new THREE.WebGLRenderer({ canvas: $('c'), antialias: !touch, powerPreference: 'high-performance' });
+ren.setPixelRatio(Math.min(devicePixelRatio, touch ? 1.5 : 2));
+const scene = new THREE.Scene(), SKY = 0x9ec7e8; scene.background = new THREE.Color(SKY); scene.fog = new THREE.Fog(SKY, 2000, 20000);
+const cam = new THREE.PerspectiveCamera(60, 1, 0.5, 250000);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556644, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(300, 600, 200); scene.add(sun);
+const M = c => new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide });
+const mat = { ground: M(0x8fbf6a), road: new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
+  bld: M(0xd8cfc0), water: M(0x4a8fd0), forest: M(0x2f6b3a), park: M(0x74b05a), land: M(0x7fae5f) };
+const RC = [0xe8a33d, 0xf0c070, 0xf5d99a, 0xffffff, 0xeeeeee, 0xdddddd, 0xb8a888, 0xc9b99a, 0x555555, 0x3a7fc0].map(h => new THREE.Color(h));
+
+// ---------- geometry builders (all take flat [x,y,x,y..] in metres, north=+y -> -z) ----------
+function areaGeo(sets, y) { // sets: [[ext, ...holes], ...]
+  const P = [], V = r => { const a = []; for (let i = 0; i < r.length; i += 2) a.push(new THREE.Vector2(r[i], r[i + 1])); if (a.length > 1 && a[0].equals(a[a.length - 1])) a.pop(); return a; };
+  for (const rs of sets) {
+    const ext = V(rs[0]), holes = rs.slice(1).map(V); if (ext.length < 3) continue;
+    const all = ext.concat(...holes);
+    for (const t of THREE.ShapeUtils.triangulateShape(ext, holes)) for (const i of t) P.push(all[i].x, y, -all[i].y);
+  }
+  return P.length ? new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(P, 3)) : null;
+}
+function ribbonGeo(lines, y, wmul = 1) { // lines: [cls,width,pts]
+  const P = [], C = [];
+  for (const [cls, w, pts] of lines) for (let i = 0; i + 3 < pts.length; i += 2) {
+    const x1 = pts[i], y1 = pts[i + 1], x2 = pts[i + 2], y2 = pts[i + 3], dx = x2 - x1, dy = y2 - y1, l = Math.hypot(dx, dy); if (l < 0.01) continue;
+    const nx = -dy / l * w * wmul / 2, ny = dx / l * w * wmul / 2, yy = y + (9 - cls) * 0.01, c = RC[cls];
+    for (const [a, b] of [[x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x2 + nx, y2 + ny], [x2 + nx, y2 + ny], [x1 - nx, y1 - ny], [x2 - nx, y2 - ny]]) { P.push(a, yy, -b); C.push(c.r, c.g, c.b); }
+  }
+  return P.length ? new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(P, 3)).setAttribute('color', new THREE.Float32BufferAttribute(C, 3)) : null;
+}
+function buildingGeo(list) {
+  const P = [];
+  for (const [h, r] of list) {
+    const n = r.length / 2 - 1; if (n < 3) continue;
+    for (let i = 0; i < n; i++) { const j = i + 1, ax = r[2 * i], ay = -r[2 * i + 1], bx = r[2 * j], by = -r[2 * j + 1];
+      P.push(ax, 0, ay, bx, 0, by, bx, h, by, ax, 0, ay, bx, h, by, ax, h, ay); }
+    const ring = []; for (let i = 0; i < n; i++) ring.push(new THREE.Vector2(r[2 * i], r[2 * i + 1]));
+    for (const t of THREE.ShapeUtils.triangulateShape(ring, [])) for (const i of t) P.push(ring[i].x, h, -ring[i].y);
+  }
+  if (!P.length) return null; const g = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); g.computeVertexNormals(); return g;
+}
+const add = (grp, g, m, ro = 0) => { if (g) { const o = new THREE.Mesh(g, m); o.renderOrder = ro; o.matrixAutoUpdate = false; grp.add(o); } };
+
+// ---------- chunk manager ----------
+const chunks = new Map(), pending = new Set(), failed = new Map();
+const groundGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(.5, 0, -.5);
+async function loadTile(k) {
+  const [tx, ty] = k.split('_').map(Number);
+  let d; for (let a = 0; a < 2 && !d; a++) { try { const r = await fetch(`data/tiles/${k}.json.gz?v=${idx.v}`); if (!r.ok) throw 0; d = await r.json(); } catch { await new Promise(s => setTimeout(s, 500)); } }
+  if (!d) { failed.set(k, performance.now()); return; }
+  const g = new THREE.Group(), gx = tx * T - X0, gz = -(ty * T - Y0); g.position.set(gx, 0, gz);
+  const ground = new THREE.Mesh(groundGeo, mat.ground); ground.scale.set(T, 1, T); g.add(ground);
+  add(g, areaGeo(d.p, 0.01), mat.park); add(g, areaGeo(d.f, 0.02), mat.forest); add(g, areaGeo(d.w, 0.03), mat.water);
+  add(g, ribbonGeo(d.r.map(a => [a[0], a[1], a[2]]), 0.05), mat.road, 2); add(g, buildingGeo(d.b), mat.bld);
+  g.userData.bl = d.b.map(([h, r]) => { const ring = []; let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9;
+    for (let i = 0; i < r.length; i += 2) { const x = gx + r[i], z = gz - r[i + 1]; ring.push([x, z]); x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    return { bb: [x0 - .5, z0 - .5, x1 + .5, z1 + .5], ring }; });
+  g.userData.tx = tx; g.userData.ty = ty;
+  if (!chunks.has(k) && Math.abs(tx - ptx) <= R + 1 && Math.abs(ty - pty) <= R + 1) { scene.add(g); chunks.set(k, g); } else dispose(g);
+}
+function dispose(g) { g.traverse(o => { if (o.geometry && o.geometry !== groundGeo) o.geometry.dispose(); }); }
+let ptx = 0, pty = 0;
+function manage() {
+  ptx = Math.floor((P.x + X0) / T); pty = Math.floor((Y0 - P.z) / T);
+  const want = [];
+  for (let dx = -R; dx <= R; dx++) for (let dy = -R; dy <= R; dy++) { const k = `${ptx + dx}_${pty + dy}`;
+    if (tileSet.has(k) && !chunks.has(k) && !pending.has(k) && !(failed.get(k) > performance.now() - 10000)) want.push([dx * dx + dy * dy, k]); }
+  want.sort((a, b) => a[0] - b[0]);
+  for (const [, k] of want) { if (pending.size >= 4) break; pending.add(k); loadTile(k).finally(() => pending.delete(k)); }
+  for (const [k, g] of chunks) if (Math.abs(g.userData.tx - ptx) > R + 1 || Math.abs(g.userData.ty - pty) > R + 1) { scene.remove(g); dispose(g); chunks.delete(k); }
+}
+
+// ---------- country overview (always present; the low-detail LOD) ----------
+const places = [];
+async function loadOverview() {
+  const o = await (await fetch(`data/overview.json.gz?v=${idx.v}`)).json(), rel = a => a.map((v, i) => i % 2 ? v - Y0 : v - X0);
+  const G = new THREE.Group();
+  add(G, areaGeo(o.country.map(rs => rs.map(rel)), -0.5), mat.land);
+  add(G, areaGeo(o.water.map(rs => rs.map(rel)), -0.4), mat.water);
+  add(G, ribbonGeo(o.roads.map(([c, p]) => [c, c < 1 ? 70 : 45, rel(p)]), -0.3), mat.road);
+  scene.add(G); for (const [n, t, x, y] of o.places) places.push([n, x, y]);
+}
+
+// ---------- player, input ----------
+const P = new THREE.Group(); P.vy = 0; P.ground = true;
+const body = new THREE.Mesh(new THREE.CapsuleGeometry(.35, 1.1, 4, 8), M(0xd33)); body.position.y = .9; P.add(body); scene.add(P);
+const keys = {}, joy = { x: 0, y: 0 }; let yaw = 0, pitch = .45, dist = 8, run = false, fly = false;
+addEventListener('keydown', e => { keys[e.code] = 1; if (e.code === 'KeyF' && DEV) fly = !fly; });
+addEventListener('keyup', e => keys[e.code] = 0);
+addEventListener('wheel', e => { dist = Math.min(40000, Math.max(3, dist * Math.exp(e.deltaY * .001))); });
+let drag = null;
+$('c').addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse' && e.clientX < innerWidth * .4) return; drag = e.pointerId; $('c').setPointerCapture(e.pointerId); });
+$('c').addEventListener('pointermove', e => { if (e.pointerId !== drag) return; yaw -= e.movementX * .005; pitch = Math.min(1.5, Math.max(.05, pitch + e.movementY * .005)); });
+$('c').addEventListener('pointerup', () => drag = null);
+let lp = null; const J = $('joy');
+J.addEventListener('pointerdown', e => { lp = e.pointerId; J.setPointerCapture(lp); jm(e); });
+J.addEventListener('pointermove', e => e.pointerId === lp && jm(e));
+J.addEventListener('pointerup', () => { lp = null; joy.x = joy.y = 0; $('knob').style.transform = ''; });
+function jm(e) { const r = J.getBoundingClientRect(); let x = (e.clientX - r.left - 60) / 50, y = (e.clientY - r.top - 60) / 50, l = Math.hypot(x, y); if (l > 1) { x /= l; y /= l; } joy.x = x; joy.y = y; $('knob').style.transform = `translate(${x * 40}px,${y * 40}px)`; }
+$('jump').onpointerdown = () => keys.Space = 1; $('jump').onpointerup = () => keys.Space = 0;
+$('run').onpointerdown = () => run = !run;
+$('zin').onpointerdown = () => dist = Math.max(3, dist / 1.6); $('zout').onpointerdown = () => dist = Math.min(40000, dist * 1.6);
+
+const inPoly = (x, z, r) => { let c = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const [xi, zi] = r[i], [xj, zj] = r[j]; if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) c = !c; } return c; };
+function blocked(x, z) {
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) { const g = chunks.get(`${ptx + dx}_${pty + dy}`); if (!g) continue;
+    for (const b of g.userData.bl) { const bb = b.bb; if (x < bb[0] || x > bb[2] || z < bb[1] || z > bb[3]) continue;
+      for (const [ox, oz] of [[0, 0], [.4, 0], [-.4, 0], [0, .4], [0, -.4]]) if (inPoly(x + ox, z + oz, b.ring)) return true; } }
+  return false;
+}
+function step(dt) {
+  let ix = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0) + joy.x, iy = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0) - joy.y; const l = Math.hypot(ix, iy);
+  if (l > 1) { ix /= l; iy /= l; }
+  const sp = fly ? 150 : (keys.ShiftLeft || run) ? 9 : 5, mx = (-Math.sin(yaw) * iy + Math.cos(yaw) * ix) * sp * dt, mz = (-Math.cos(yaw) * iy - Math.sin(yaw) * ix) * sp * dt;
+  const noclip = fly;
+  if (noclip || !blocked(P.position.x + mx, P.position.z)) P.position.x += mx;
+  if (noclip || !blocked(P.position.x, P.position.z + mz)) P.position.z += mz;
+  if (l > .05) body.rotation.y = Math.atan2(-mx, -mz);
+  if (keys.Space && P.ground) { P.vy = 7; P.ground = false; }
+  P.vy -= 20 * dt; P.position.y += P.vy * dt; if (P.position.y <= 0) { P.position.y = 0; P.vy = 0; P.ground = true; }
+}
+
+// ---------- multiplayer ----------
+const others = new Map(); let ws = null;
+const toW = (X, Y) => [X - X0, -(Y - Y0)];
+async function net() {
+  let tok = localStorage.lt3dToken;
+  try { if (!tok) { tok = (await (await fetch('/api/register', { method: 'POST', body: JSON.stringify({ name: 'p' + (Math.random() * 1e4 | 0) }) })).json()).token; localStorage.lt3dToken = tok; }
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${tok}`);
+  } catch { return; }
+  ws.onmessage = e => { const d = JSON.parse(e.data);
+    if ((d.t === 'welcome' || d.t === 'fix') && d.X != null) { const [x, z] = toW(d.X, d.Y); P.position.x = x; P.position.z = z; }
+    if (d.t === 'snap') { const seen = new Set();
+      for (const [id, X, Y, h, ry] of d.pl) { seen.add(id); let m = others.get(id); if (!m) { m = new THREE.Mesh(new THREE.CapsuleGeometry(.35, 1.1, 4, 8), M(0x36d)); scene.add(m); others.set(id, m); }
+        const [x, z] = toW(X, Y); m.position.set(x, h + .9, z); m.rotation.y = ry; }
+      for (const [id, m] of others) if (!seen.has(id)) { scene.remove(m); others.delete(id); } } };
+  ws.onclose = () => setTimeout(net, 3000);
+  setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({ t: 'pos', X: P.position.x + X0, Y: Y0 - P.position.z, h: P.position.y, ry: body.rotation.y })), 100);
+}
+
+// ---------- boot ----------
+function resize() { ren.setSize(innerWidth, innerHeight, false); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+let last = performance.now(), acc = 0, fps = 0, hudT = 0, manT = 0;
+function frame(now) {
+  requestAnimationFrame(frame); const dt = Math.min(.05, (now - last) / 1000); last = now; fps = fps * .9 + (1 / Math.max(dt, 1e-3)) * .1;
+  step(dt);
+  const cp = Math.cos(pitch); cam.position.set(P.position.x + Math.sin(yaw) * cp * dist, P.position.y + 1.5 + Math.sin(pitch) * dist, P.position.z + Math.cos(yaw) * cp * dist); cam.lookAt(P.position.x, P.position.y + 1.5, P.position.z);
+  scene.fog.near = Math.max(1500, dist * 1.5); scene.fog.far = scene.fog.near * 12; cam.far = scene.fog.far * 1.2; cam.updateProjectionMatrix();
+  if ((manT += dt) > .25) { manT = 0; manage(); localStorage.lt3dPos = JSON.stringify([P.position.x + X0, Y0 - P.position.z]); }
+  if ((hudT += dt) > .5) { hudT = 0; const X = P.position.x + X0, Y = Y0 - P.position.z; let nn = '', nd = 1e9;
+    for (const [n, x, y] of places) { const d = Math.hypot(x - X, y - Y); if (d < nd) { nd = d; nn = n; } }
+    $('hud').textContent = `LKS94 ${X.toFixed(0)}, ${Y.toFixed(0)}  tile ${ptx}_${pty}\nnear ${nn} (${(nd / 1000).toFixed(1)} km)\nchunks ${chunks.size}${pending.size ? ' (+' + pending.size + ' loading)' : ''}  ${fps.toFixed(0)} fps${fly ? '  [DEV FLY]' : ''}`; }
+  ren.render(scene, cam);
+}
+(async () => {
+  try { say('Loading country index…'); for (;;) { const r = await fetch('data/index.json', { cache: 'no-cache' });
+      if (r.status === 503) { say('Server is waking up and downloading the map…\nThis takes 1–3 minutes on free hosting.'); await new Promise(s => setTimeout(s, 8000)); continue; }
+      idx = await r.json(); break; } }
+  catch { return fail('No country data found.\nBuild it first:\n  python pipeline/build.py lithuania-latest.osm.pbf data'); }
+  X0 = idx.x0; Y0 = idx.y0; T = idx.tile; tileSet = new Set(idx.tiles);
+  try { say('Loading country overview…'); await loadOverview(); } catch (e) { return fail('Overview failed to load: ' + e.message); }
+  let s = idx.spawn; try { const p = JSON.parse(localStorage.lt3dPos); if (p && tileSet.has(`${Math.floor(p[0] / T)}_${Math.floor(p[1] / T)}`)) s = p; } catch {}
+  P.position.set(s[0] - X0, 0, -(s[1] - Y0)); manage(); say('Loading first chunks…');
+  const t0 = performance.now(); while (chunks.size < 1 && performance.now() - t0 < 15000) { await new Promise(r => setTimeout(r, 100)); manage(); }
+  $('load').style.display = 'none'; net(); requestAnimationFrame(frame);
+})();
+</script></body></html>

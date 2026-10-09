@@ -2,14 +2,13 @@ services:
   - type: web
     name: lt3d
     runtime: node
-    plan: starter            # persistent disk needs a paid plan
+    plan: free
     buildCommand: cd server && npm install
     startCommand: node server/server.js
     healthCheckPath: /health
-    disk: { name: lt3d-disk, mountPath: /var/data, sizeGB: 5 }
     envVars:
       - { key: NODE_VERSION, value: 22.13.0 }
-      - { key: DB_PATH, value: /var/data/game.db }
-      - { key: DATA_DIR, value: /var/data/data }
-      - { key: DATA_TAG, value: v1 }          # change this value to force a data re-download
-      - { key: DATA_URL, sync: false }        # https://github.com/<you>/<repo>/releases/download/data-latest/lt3d-data.tar.gz
+      - { key: DB_PATH, value: /tmp/game.db }
+      - { key: DATA_DIR, value: /tmp/data }
+      - { key: DATA_TAG, value: v1 }
+      - { key: DATA_URL, value: "https://github.com/gaspadorius757-sys/lt3d/releases/download/data-latest/lt3d-data.tar.gz" }
